@@ -1,3 +1,6 @@
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
@@ -24,6 +27,57 @@ const pool = new Pool({
 
 const store = new PostgresStore({ pool: pool });
 
+const originalSave = store.save.bind(store);
+store.save = async function(options) {
+    const sessionName = options.session || 'RemoteAuth';
+    const possiblePaths = [
+        `${sessionName}.zip`,
+        `session-${sessionName}.zip`,
+        path.join('.wwebjs_auth', `${sessionName}.zip`),
+        path.join('.wwebjs_auth', `session-${sessionName}.zip`),
+        path.join('.wwebjs_cache', `${sessionName}.zip`),
+        path.join('.wwebjs_cache', `session-${sessionName}.zip`)
+    ];
+
+    let foundPath = null;
+    for (let i = 0; i < 15; i++) {
+        foundPath = possiblePaths.find(p => fs.existsSync(p));
+        if (foundPath) break;
+        await new Promise(res => setTimeout(res, 300));
+    }
+
+    if (foundPath && foundPath !== `${sessionName}.zip`) {
+        fs.copyFileSync(foundPath, `${sessionName}.zip`);
+    }
+
+    return await originalSave(options);
+};
+
+const originalExtract = store.extract.bind(store);
+store.extract = async function(options) {
+    await originalExtract(options);
+    const sessionName = options.session || 'RemoteAuth';
+    const extractedPath = options.path || `${sessionName}.zip`;
+
+    const authDir = path.join('.wwebjs_auth');
+    if (!fs.existsSync(authDir)) {
+        fs.mkdirSync(authDir, { recursive: true });
+    }
+
+    const targets = [
+        path.join('.wwebjs_auth', `${sessionName}.zip`),
+        path.join('.wwebjs_auth', `session-${sessionName}.zip`)
+    ];
+
+    for (const target of targets) {
+        if (fs.existsSync(extractedPath) && !fs.existsSync(target)) {
+            try {
+                fs.copyFileSync(extractedPath, target);
+            } catch (e) {}
+        }
+    }
+};
+
 const client = new Client({
     authStrategy: new RemoteAuth({
         store: store,
@@ -37,7 +91,8 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--single-process'
         ]
     }
 });
