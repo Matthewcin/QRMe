@@ -360,22 +360,35 @@ async function startBot() {
             const url = pendingByChat.get(from);
             pendingByChat.delete(from);
 
+            let statusMsg = await sock.sendMessage(from, { text: '🔍 Generando QR... [░░░░░░░░░░] 0%' });
+
             try {
-                console.log(`Generando QR estilizado para: ${url} (nivel ${level})`);
+                await new Promise(res => setTimeout(res, 300));
+                await sock.sendMessage(from, { text: '🔍 Generando QR... [██░░░░░░░░] 20%', edit: statusMsg.key });
+
+                await new Promise(res => setTimeout(res, 300));
+                await sock.sendMessage(from, { text: '🔍 Generando QR... [██████░░░░] 60%', edit: statusMsg.key });
 
                 const finalImage = await generateStyledQR(url, level);
+
+                await sock.sendMessage(from, { text: '🔍 Generando QR... [█████████░] 90%', edit: statusMsg.key });
+
+                await new Promise(res => setTimeout(res, 300));
 
                 await sock.sendMessage(from, {
                     image: finalImage,
                     caption: `QR generado con nivel de corrección *${level}*.`
                 });
 
+                await sock.sendMessage(from, { text: '✅ [██████████] 100% - ¡QR listo!', edit: statusMsg.key });
+
                 console.log('QR enviado correctamente');
 
             } catch (error) {
                 console.error('Error generando QR:', error);
                 await sock.sendMessage(from, { 
-                    text: 'Uh, algo falló generando el QR. Probá de nuevo mandando la URL.' 
+                    text: 'Uh, algo falló generando el QR. Probá de nuevo mandando la URL.',
+                    edit: statusMsg.key 
                 });
             }
 
