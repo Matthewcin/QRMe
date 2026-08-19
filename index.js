@@ -1,7 +1,6 @@
 const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 const { Pool } = require('pg');
 const pino = require('pino');
-const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
 const QRCode = require('qrcode');
 const sharp = require('sharp');
@@ -23,10 +22,8 @@ const pool = new Pool({
 });
 
 async function usePostgresAuthState(pool) {
-    await pool.query('DROP TABLE IF EXISTS whatsapp_sessions');
-    
     await pool.query(`
-        CREATE TABLE whatsapp_sessions (
+        CREATE TABLE IF NOT EXISTS whatsapp_sessions (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
@@ -312,13 +309,23 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    if (!sock.authState.creds.registered) {
+        const phoneNumber = '5492494015616'; 
+        
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(phoneNumber);
+                console.log(`\n========================================`);
+                console.log(` TU CÓDIGO DE EMPAREJAMIENTO ES: ${code}`);
+                console.log(`========================================\n`);
+            } catch (error) {
+                console.error('Error al solicitar el código de emparejamiento:', error);
+            }
+        }, 4000);
+    }
 
-        if (qr) {
-            console.log('Escanea este codigo QR con tu celular:');
-            qrcodeTerminal.generate(qr, { small: true });
-        }
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'open') {
             console.log('Cliente conectado y listo');
