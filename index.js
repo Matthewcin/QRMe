@@ -23,8 +23,10 @@ const pool = new Pool({
 });
 
 async function usePostgresAuthState(pool) {
+    await pool.query('DROP TABLE IF EXISTS whatsapp_sessions');
+    
     await pool.query(`
-        CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+        CREATE TABLE whatsapp_sessions (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
