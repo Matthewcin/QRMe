@@ -1,9 +1,7 @@
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
-const { PostgresStore } = require('wwebjs-postgres');
+const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 const { Pool } = require('pg');
+const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
 const QRCode = require('qrcode');
@@ -25,111 +23,80 @@ const pool = new Pool({
     }
 });
 
-const store = new PostgresStore({ pool: pool });
+async function usePostgresAuthState(pool) {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    `);
 
-const originalSave = store.save.bind(store);
-store.save = async function(options) {
-    const sessionName = options.session || 'RemoteAuth';
-    const possiblePaths = [
-        `${sessionName}.zip`,
-        `session-${sessionName}.zip`,
-        path.join('.wwebjs_auth', `${sessionName}.zip`),
-        path.join('.wwebjs_auth', `session-${sessionName}.zip`),
-        path.join('.wwebjs_cache', `${sessionName}.zip`),
-        path.join('.wwebjs_cache', `session-${sessionName}.zip`)
-    ];
-
-    let foundPath = null;
-    for (let i = 0; i < 15; i++) {
-        foundPath = possiblePaths.find(p => fs.existsSync(p));
-        if (foundPath) break;
-        await new Promise(res => setTimeout(res, 300));
-    }
-
-    if (foundPath && foundPath !== `${sessionName}.zip`) {
-        fs.copyFileSync(foundPath, `${sessionName}.zip`);
-    }
-
-    return await originalSave(options);
-};
-
-const originalExtract = store.extract.bind(store);
-store.extract = async function(options) {
-    const sessionName = options.session || 'RemoteAuth';
-    const extractedPath = options.path || `${sessionName}.zip`;
-
-    const authDir = path.join('.wwebjs_auth');
-    if (!fs.existsSync(authDir)) {
-        fs.mkdirSync(authDir, { recursive: true });
-    }
-
-    console.log('Descargando y extrayendo sesion...');
-    await originalExtract(options);
-
-    const targets = [
-        path.join('.wwebjs_auth', `${sessionName}.zip`),
-        path.join('.wwebjs_auth', `session-${sessionName}.zip`)
-    ];
-
-    for (const target of targets) {
-        if (fs.existsSync(extractedPath) && !fs.existsSync(target)) {
-            try {
-                fs.copyFileSync(extractedPath, target);
-            } catch (e) {}
+    const readData = async (key) => {
+        try {
+            const res = await pool.query('SELECT value FROM whatsapp_sessions WHERE key = $1', [key]);
+            if (res.rows.length === 0) return null;
+            return JSON.parse(res.rows[0].value, BufferJSON.reviver);
+        } catch (error) {
+            return null;
         }
-    }
+    };
 
-    console.log('Pausando 10 segundos para liberar memoria RAM...');
-    await new Promise(res => setTimeout(res, 10000));
-};
+    const writeData = async (data, key) => {
+        try {
+            const jsonString = JSON.stringify(data, BufferJSON.replacer);
+            await pool.query(`
+                INSERT INTO whatsapp_sessions (key, value)
+                VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            `, [key, jsonString]);
+        } catch (error) {
+            console.error(`Error guardando ${key}:`, error);
+        }
+    };
 
-const client = new Client({
-    authStrategy: new RemoteAuth({
-        store: store,
-        backupSyncIntervalMs: 300000
-    }),
-    puppeteer: {
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions',
-            '--mute-audio',
-            '--disable-background-networking',
-            '--disable-default-apps',
-            '--disable-sync',
-            '--disable-translate',
-            '--hide-scrollbars',
-            '--metrics-recording-only',
-            '--no-default-browser-check',
-            '--safebrowsing-disable-auto-update',
-            '--enable-low-end-device-mode',
-            '--disable-component-update',
-            '--disable-client-side-phishing-detection',
-            '--disable-hang-monitor',
-            '--disable-prompt-on-repost',
-            '--disable-ipc-flooding-protection'
-        ]
-    }
-});
+    const removeData = async (key) => {
+        try {
+            await pool.query('DELETE FROM whatsapp_sessions WHERE key = $1', [key]);
+        } catch (error) {}
+    };
 
-client.on('qr', (qr) => {
-    console.log('Escanea este codigo QR con tu celular:');
-    qrcodeTerminal.generate(qr, { small: true });
-});
+    const creds = await readData('creds') || initAuthCreds();
 
-client.on('remote_session_saved', () => {
-    console.log('Sesion guardada exitosamente en PostgreSQL');
-});
-
-client.on('ready', () => {
-    console.log('Cliente conectado y listo');
-});
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    for (const id of ids) {
+                        const key = `${type}-${id}`;
+                        let value = await readData(key);
+                        data[id] = value;
+                    }
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category of Object.keys(data)) {
+                        for (const id of Object.keys(data[category])) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            if (value) {
+                                tasks.push(writeData(value, key));
+                            } else {
+                                tasks.push(removeData(key));
+                            }
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => {
+            return writeData(creds, 'creds');
+        }
+    };
+}
 
 const LEVEL_ALIASES = {
     'l': 'L', 'bajo': 'L',
@@ -175,7 +142,6 @@ async function generateStyledQR(url, errorCorrectionLevel) {
 
     const size = qr.modules.size;
     const data = qr.modules.data;
-
     const imageSize = 2000;
     const margin = 100;
     const moduleSize = (imageSize - margin * 2) / size;
@@ -226,7 +192,6 @@ async function generateStyledQR(url, errorCorrectionLevel) {
         const x = margin + col * moduleSize;
         const y = margin + row * moduleSize;
         const total = moduleSize * 7;
-
         const outerRadius = total * eyeOuterRatio;
 
         svg += `
@@ -336,60 +301,91 @@ async function generateStyledQR(url, errorCorrectionLevel) {
 const pendingByChat = new Map();
 const usuariosExplicados = new Set();
 
-client.on('message', async (message) => {
-    const from = message.from;
-    const text = message.body.trim();
+async function startBot() {
+    const { state, saveCreds } = await usePostgresAuthState(pool);
 
-    if (pendingByChat.has(from)) {
-        const level = LEVEL_ALIASES[text.toLowerCase()];
+    const sock = makeWASocket({
+        auth: state,
+        logger: pio({ level: 'silent' })
+    });
 
-        if (!level) {
-            await message.reply(
-                'Respondé con *L*, *M*, *Q* o *H* ' +
-                '(o el nombre: bajo / medio / cuartil / alto).'
-            );
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('Escanea este codigo QR con tu celular:');
+            qrcodeTerminal.generate(qr, { small: true });
+        }
+
+        if (connection === 'open') {
+            console.log('Cliente conectado y listo');
+        } else if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Conexion cerrada. Reconectando...', shouldReconnect);
+            if (shouldReconnect) {
+                startBot();
+            }
+        }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        const msg = messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const from = msg.key.remoteJid;
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+
+        if (pendingByChat.has(from)) {
+            const level = LEVEL_ALIASES[text.toLowerCase()];
+
+            if (!level) {
+                await sock.sendMessage(from, { 
+                    text: 'Respondé con *L*, *M*, *Q* o *H* (o el nombre: bajo / medio / cuartil / alto).' 
+                });
+                return;
+            }
+
+            const url = pendingByChat.get(from);
+            pendingByChat.delete(from);
+
+            try {
+                console.log(`Generando QR estilizado para: ${url} (nivel ${level})`);
+
+                const finalImage = await generateStyledQR(url, level);
+
+                await sock.sendMessage(from, {
+                    image: finalImage,
+                    caption: `QR generado con nivel de corrección *${level}*.`
+                });
+
+                console.log('QR enviado correctamente');
+
+            } catch (error) {
+                console.error('Error generando QR:', error);
+                await sock.sendMessage(from, { 
+                    text: 'Uh, algo falló generando el QR. Probá de nuevo mandando la URL.' 
+                });
+            }
+
             return;
         }
 
-        const url = pendingByChat.get(from);
-        pendingByChat.delete(from);
+        if (text.startsWith('https://')) {
+            pendingByChat.set(from, text);
 
-        try {
-            console.log(`Generando QR estilizado para: ${url} (nivel ${level})`);
-
-            const finalImage = await generateStyledQR(url, level);
-
-            const media = new MessageMedia(
-                'image/png',
-                finalImage.toString('base64'),
-                'qr.png'
-            );
-
-            await message.reply(media, undefined, {
-                caption: `QR generado con nivel de corrección *${level}*.`
-            });
-
-            console.log('QR enviado correctamente');
-
-        } catch (error) {
-            console.error('Error generando QR:', error);
-            await message.reply('Uh, algo falló generando el QR. Probá de nuevo mandando la URL.');
+            if (!usuariosExplicados.has(from)) {
+                await sock.sendMessage(from, { text: levelExplanationMessage() });
+                usuariosExplicados.add(from);
+            } else {
+                await sock.sendMessage(from, { text: 'Respondé con *L*, *M*, *Q* o *H* para generar el código.' });
+            }
         }
-
-        return;
-    }
-
-    if (text.startsWith('https://')) {
-        pendingByChat.set(from, text);
-
-        if (!usuariosExplicados.has(from)) {
-            await message.reply(levelExplanationMessage());
-            usuariosExplicados.add(from);
-        } else {
-            await message.reply('Respondé con *L*, *M*, *Q* o *H* para generar el código.');
-        }
-    }
-});
+    });
+}
 
 console.log('Iniciando WhatsApp, espera un momento...');
-client.initialize();
+startBot();
