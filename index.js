@@ -16,7 +16,10 @@ app.listen(port, () => {
 });
 
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
 
 const store = new PostgresStore({ pool: pool });
