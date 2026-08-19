@@ -55,7 +55,6 @@ store.save = async function(options) {
 
 const originalExtract = store.extract.bind(store);
 store.extract = async function(options) {
-    await originalExtract(options);
     const sessionName = options.session || 'RemoteAuth';
     const extractedPath = options.path || `${sessionName}.zip`;
 
@@ -63,6 +62,8 @@ store.extract = async function(options) {
     if (!fs.existsSync(authDir)) {
         fs.mkdirSync(authDir, { recursive: true });
     }
+
+    await originalExtract(options);
 
     const targets = [
         path.join('.wwebjs_auth', `${sessionName}.zip`),
