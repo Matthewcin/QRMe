@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 const { Pool } = require('pg');
 const pino = require('pino');
@@ -306,7 +305,7 @@ async function startBot() {
 
     const sock = makeWASocket({
         auth: state,
-        logger: pio({ level: 'silent' })
+        logger: pino({ level: 'silent' })
     });
 
     sock.ev.on('creds.update', saveCreds);
