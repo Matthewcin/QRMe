@@ -108,7 +108,12 @@ const client = new Client({
             '--metrics-recording-only',
             '--no-default-browser-check',
             '--safebrowsing-disable-auto-update',
-            '--js-flags="--max-old-space-size=256"'
+            '--enable-low-end-device-mode',
+            '--disable-component-update',
+            '--disable-client-side-phishing-detection',
+            '--disable-hang-monitor',
+            '--disable-prompt-on-repost',
+            '--disable-ipc-flooding-protection'
         ]
     }
 });
