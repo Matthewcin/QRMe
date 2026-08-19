@@ -118,10 +118,10 @@ async function generateStyledQR(url, errorCorrectionLevel) {
     const size = qr.modules.size;
     const data = qr.modules.data;
 
-    const imageSize = 500;
+    const imageSize = 2000;
 
     // Margen blanco
-    const margin = 20;
+    const margin = 100;
 
     // Tamaño de una celda
     const moduleSize =
