@@ -93,7 +93,17 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--single-process'
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--mute-audio',
+            '--disable-background-networking',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--hide-scrollbars',
+            '--metrics-recording-only',
+            '--no-default-browser-check',
+            '--safebrowsing-disable-auto-update'
         ]
     }
 });
