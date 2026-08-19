@@ -63,6 +63,7 @@ store.extract = async function(options) {
         fs.mkdirSync(authDir, { recursive: true });
     }
 
+    console.log('Descargando y extrayendo sesion...');
     await originalExtract(options);
 
     const targets = [
@@ -77,6 +78,9 @@ store.extract = async function(options) {
             } catch (e) {}
         }
     }
+
+    console.log('Pausando 10 segundos para liberar memoria RAM...');
+    await new Promise(res => setTimeout(res, 10000));
 };
 
 const client = new Client({
@@ -103,7 +107,8 @@ const client = new Client({
             '--hide-scrollbars',
             '--metrics-recording-only',
             '--no-default-browser-check',
-            '--safebrowsing-disable-auto-update'
+            '--safebrowsing-disable-auto-update',
+            '--js-flags="--max-old-space-size=256"'
         ]
     }
 });
