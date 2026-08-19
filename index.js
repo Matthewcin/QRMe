@@ -1,4 +1,6 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
+const { PostgresStore } = require('wwebjs-postgres');
+const { Pool } = require('pg');
 const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
 const QRCode = require('qrcode');
@@ -13,59 +15,42 @@ app.listen(port, () => {
     console.log(`Servidor en puerto ${port}`);
 });
 
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL
+});
+
+const store = new PostgresStore({ pool: pool });
+
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new RemoteAuth({
+        store: store,
+        backupSyncIntervalMs: 300000
+    }),
     puppeteer: {
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
         ]
     }
 });
-
-
-// ============================================================
-// QR DE WHATSAPP
-// ============================================================
 
 client.on('qr', (qr) => {
     console.log('Escanea este codigo QR con tu celular:');
     qrcodeTerminal.generate(qr, { small: true });
 });
 
-
-// ============================================================
-// CLIENTE LISTO
-// ============================================================
+client.on('remote_session_saved', () => {
+    console.log('Sesion guardada exitosamente en PostgreSQL');
+});
 
 client.on('ready', () => {
     console.log('Cliente conectado y listo');
 });
-
-
-// ============================================================
-// NIVELES DE CORRECCION DE ERRORES
-// ============================================================
-//
-// Cuanto mas alto el nivel, mas "relleno" extra lleva el QR para
-// poder leerse aunque este sucio, rayado, doblado o tapado en parte
-// (por ejemplo con un logo en el centro). A cambio, queda con mas
-// modulos negros: se ve mas denso y necesita imprimirse un poco mas
-// grande para seguir siendo legible.
-//
-// L (~7%)  -> lo mas "limpio" y menos denso. Uso digital/pantalla,
-//             o impresion grande y prolija, sin logo ni riesgo de
-//             manchas o dobleces.
-// M (~15%) -> el estandar para uso general: tarjetas, flyers,
-//             folletos, empaques con buena impresion.
-// Q (~25%) -> mas resistente. Carteles al aire libre, etiquetas de
-//             producto, menus (grasa/liquidos), impresion industrial,
-//             o un icono chico superpuesto.
-// H (~30%) -> el mas resistente y el mas denso visualmente.
-//             Obligatorio si va a llevar un logo o imagen en el
-//             centro del QR. Tambien para grabado, bordado,
-//             superficies irregulares, QR muy chico o mucho desgaste.
 
 const LEVEL_ALIASES = {
     'l': 'L', 'bajo': 'L',
@@ -103,13 +88,7 @@ function levelExplanationMessage() {
     );
 }
 
-
-// ============================================================
-// GENERAR QR ESTILIZADO
-// ============================================================
-
 async function generateStyledQR(url, errorCorrectionLevel) {
-
     const qr = QRCode.create(url, {
         errorCorrectionLevel: errorCorrectionLevel,
         margin: 4
@@ -119,27 +98,16 @@ async function generateStyledQR(url, errorCorrectionLevel) {
     const data = qr.modules.data;
 
     const imageSize = 2000;
-
-    // Margen blanco
     const margin = 100;
+    const moduleSize = (imageSize - margin * 2) / size;
 
-    // Tamaño de una celda
-    const moduleSize =
-        (imageSize - margin * 2) / size;
-
-    // Qué tan redondeadas se ven las celdas de datos.
-    // 0.5 = una celda sola queda como un círculo perfecto.
-    // Bajalo (ej. 0.3) si preferís un estilo más "cuadrado suave".
     const cornerRatio = 0.5;
     const radius = moduleSize * cornerRatio;
 
-    // Estilo de los 3 "ojos" (finder patterns):
-    // 0 = esquinas 100% cuadradas, 0.5 = círculo perfecto.
-    const eyeOuterRatio = 0.35;      // borde exterior negro
-    const eyeInnerRatio = 0.25;      // agujero blanco interior
-    const eyeRingThickness = 1.00;   // grosor del aro, en celdas (más bajo = más fino)
-    const eyeCenterSize = 3.0;       // tamaño del cuadrado central, en celdas (siempre 100% cuadrado)
-
+    const eyeOuterRatio = 0.35;
+    const eyeInnerRatio = 0.25;
+    const eyeRingThickness = 1.00;
+    const eyeCenterSize = 3.0;
 
     let svg = `
         <svg
@@ -148,7 +116,6 @@ async function generateStyledQR(url, errorCorrectionLevel) {
             height="${imageSize}"
             viewBox="0 0 ${imageSize} ${imageSize}"
         >
-
         <rect
             width="${imageSize}"
             height="${imageSize}"
@@ -156,22 +123,14 @@ async function generateStyledQR(url, errorCorrectionLevel) {
         />
     `;
 
-
-    // ========================================================
-    // FINDER PATTERNS
-    // ========================================================
-
     const finderPatterns = [
         { row: 0, col: 0 },
         { row: 0, col: size - 7 },
         { row: size - 7, col: 0 }
     ];
 
-
     function isFinder(row, col) {
-
         for (const finder of finderPatterns) {
-
             if (
                 row >= finder.row &&
                 row < finder.row + 7 &&
@@ -181,24 +140,14 @@ async function generateStyledQR(url, errorCorrectionLevel) {
                 return true;
             }
         }
-
         return false;
     }
 
-
-    // ========================================================
-    // FINDER PERSONALIZADO (igual que antes, esto ya se veía bien)
-    // ========================================================
-
     function drawFinder(row, col) {
-
         const x = margin + col * moduleSize;
         const y = margin + row * moduleSize;
-
         const total = moduleSize * 7;
 
-
-        // EXTERIOR NEGRO — cuadrado circular, tirando a círculo
         const outerRadius = total * eyeOuterRatio;
 
         svg += `
@@ -213,8 +162,6 @@ async function generateStyledQR(url, errorCorrectionLevel) {
             />
         `;
 
-
-        // INTERIOR BLANCO
         const whiteOffset = moduleSize * eyeRingThickness;
         const whiteSize = total - whiteOffset * 2;
         const innerRadius = whiteSize * eyeInnerRatio;
@@ -231,8 +178,6 @@ async function generateStyledQR(url, errorCorrectionLevel) {
             />
         `;
 
-
-        // CENTRO NEGRO — cuadrado, sin redondear
         const centerSize = moduleSize * eyeCenterSize;
 
         svg += `
@@ -246,16 +191,9 @@ async function generateStyledQR(url, errorCorrectionLevel) {
         `;
     }
 
-
-    // Dibujar los tres patrones
     drawFinder(0, 0);
     drawFinder(0, size - 7);
     drawFinder(size - 7, 0);
-
-
-    // ========================================================
-    // MÓDULOS NORMALES
-    // ========================================================
 
     function isDark(row, col) {
         if (row < 0 || row >= size || col < 0 || col >= size) return false;
@@ -281,15 +219,11 @@ async function generateStyledQR(url, errorCorrectionLevel) {
     let modulesPath = '';
 
     for (let row = 0; row < size; row++) {
-
         for (let col = 0; col < size; col++) {
-
-            // Blanco
             if (!data[row * size + col]) {
                 continue;
             }
 
-            // Finder ya dibujado
             if (isFinder(row, col)) {
                 continue;
             }
@@ -314,58 +248,25 @@ async function generateStyledQR(url, errorCorrectionLevel) {
     }
 
     svg += `<path d="${modulesPath}" fill="black" />`;
+    svg += `</svg>`;
 
-
-    svg += `
-        </svg>
-    `;
-
-
-    // ========================================================
-    // SVG → PNG
-    // ========================================================
-
-    const png = await sharp(
-        Buffer.from(svg)
-    )
-    .png()
-    .toBuffer();
-
-
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
     return png;
 }
 
-
-// ============================================================
-// RECIBIR MENSAJES
-// ============================================================
-//
-// Flujo:
-// 1) El usuario manda una URL (https://...)
-// 2) El bot le pregunta qué nivel de corrección de errores quiere,
-//    con la explicación de cada uno.
-// 3) El usuario responde L / M / Q / H (o "bajo" / "medio" /
-//    "cuartil" / "alto").
-// 4) El bot genera el QR con ese nivel.
-
-// Guarda, por cada chat, la URL que está esperando nivel de corrección
 const pendingByChat = new Map();
+const usuariosExplicados = new Set();
 
 client.on('message', async (message) => {
-
     const from = message.from;
     const text = message.body.trim();
 
-    // -----------------------------------------------------
-    // Está esperando que elija el nivel de corrección
-    // -----------------------------------------------------
     if (pendingByChat.has(from)) {
-
         const level = LEVEL_ALIASES[text.toLowerCase()];
 
         if (!level) {
             await message.reply(
-                'No entendí tu chimbada, Respondé con *L*, *M*, *Q* o *H* ' +
+                'Respondé con *L*, *M*, *Q* o *H* ' +
                 '(o el nombre: bajo / medio / cuartil / alto).'
             );
             return;
@@ -375,13 +276,9 @@ client.on('message', async (message) => {
         pendingByChat.delete(from);
 
         try {
+            console.log(`Generando QR estilizado para: ${url} (nivel ${level})`);
 
-            console.log(
-                `Generando QR estilizado para: ${url} (nivel ${level})`
-            );
-
-            const finalImage =
-                await generateStyledQR(url, level);
+            const finalImage = await generateStyledQR(url, level);
 
             const media = new MessageMedia(
                 'image/png',
@@ -396,34 +293,24 @@ client.on('message', async (message) => {
             console.log('QR enviado correctamente');
 
         } catch (error) {
-
-            console.error(
-                'Error generando QR:',
-                error
-            );
-
-            await message.reply(
-                'Uh, algo falló generando el QR. Probá de nuevo mandando la URL.'
-            );
+            console.error('Error generando QR:', error);
+            await message.reply('Uh, algo falló generando el QR. Probá de nuevo mandando la URL.');
         }
 
         return;
     }
 
-    // -----------------------------------------------------
-    // Llega una URL nueva
-    // -----------------------------------------------------
     if (text.startsWith('https://')) {
-
         pendingByChat.set(from, text);
 
-        await message.reply(levelExplanationMessage());
+        if (!usuariosExplicados.has(from)) {
+            await message.reply(levelExplanationMessage());
+            usuariosExplicados.add(from);
+        } else {
+            await message.reply('Respondé con *L*, *M*, *Q* o *H* para generar el código.');
+        }
     }
 });
 
-
-console.log(
-    'Iniciando WhatsApp, espera un momento...'
-);
-
+console.log('Iniciando WhatsApp, espera un momento...');
 client.initialize();

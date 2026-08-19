@@ -12,6 +12,8 @@
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.33.4",
     "whatsapp-web.js": "^1.23.0",
-    "puppeteer": "^22.0.0"
+    "puppeteer": "^22.0.0",
+    "pg": "^8.11.5",
+    "wwebjs-postgres": "^1.0.0"
   }
 }
